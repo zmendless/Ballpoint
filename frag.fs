@@ -218,7 +218,6 @@ float edgeMap(vec3 p, float e) {
     return min(plus, sdFractalFrame(p, size, e));
 }
 
-
 float map(vec3 p) {
     p *= rotY(time * 0.712);
 
@@ -303,24 +302,59 @@ float distToLine(float coord, float spacing) {
     return min(m, spacing - m);
 }
 
-void main() {
+vec3 notebookPaper(vec2 fragCoord, vec3 baseColor, float t) {
+    vec3 col = baseColor;
 
-    float fps = 10.0;
-    float stepIndex = floor(u_time * fps);
-    time = stepIndex / fps;
+    float frameSeed = floor(t * 10.0);
+    vec2 frameJitter = vec2(hash(vec2(frameSeed, 41.0)), hash(vec2(frameSeed, 59.0)));
 
-    float jitterIndex = floor(stepIndex / 2.482);
+    float grain = fbm3(vec3(fragCoord * 0.9 + frameJitter * 37.0, frameSeed * 0.37));
+    float fineGrain = hash(fragCoord * 1.7 + frameJitter * 91.3 + frameSeed);
+    col -= (grain - 0.5) * 0.105;
+    col -= (fineGrain - 0.5) * 0.1035;
 
-    vec2 jitter = vec2(
-        hash(vec2(jitterIndex, 1.0)),
-        hash(vec2(jitterIndex, 2.0))
-    ) - 0.5;
+    float fiber = fbm3(vec3(fragCoord * 0.03, frameSeed * 0.05 + 12.0));
+    col -= (fiber - 0.5) * 0.012;
 
-    vec2 uv = gl_FragCoord.xy/u_resolution.xy * 2.0 - 1.0;
+    float speckle = hash(fragCoord * 3.7 + frameJitter * 53.0 + frameSeed * 7.0);
+    speckle = pow(speckle, 5.0);
+    float speckleSign = hash(fragCoord * 1.3 + frameJitter * 17.0 + frameSeed * 3.0);
+    col -= speckle * mix(0.10, -0.10, step(0.5, speckleSign));
+
+    float tooth = fbm3(vec3(fragCoord * 0.5 + frameJitter * 20.0, frameSeed * 0.6 + 200.0));
+    col += (tooth - 0.5) * 0.035;
+
+    float lineSpacing = 155.0;
+    float wave = fbm3(vec3(fragCoord.x * 0.010, frameSeed * 0.08, 5.0)) * 0.2
+               + (hash(vec2(floor(fragCoord.x * 0.05), frameSeed)) - 0.5) * 0.6;
+    float ruleY = fragCoord.y + wave + (hash(vec2(frameSeed, 23.0)) - 0.5) * lineSpacing / 8.0;
+    float distRule = distToLine(ruleY, lineSpacing);
+    float ruleMask = 1.0 - smoothstep(0.0, 4.1, distRule);
+    float ruleBreak = fbm3(vec3(fragCoord.x * 0.001, floor(ruleY / lineSpacing), frameSeed * 0.1));
+    ruleMask *= smoothstep(0.15, 0.55, ruleBreak);
+
+    vec3 blueInk = vec3(0.42, 0.55, 0.86);
+    col = mix(col, blueInk, ruleMask * 0.5);
+
+    float marginX = 68.0 + (hash(vec2(frameSeed, 20.0)) - 0.5) * 10.0   ;
+    float marginWave = fbm3(vec3(fragCoord.y * 0.01, frameSeed * 0.08, 77.0)) * 1.8;
+    float distMargin = abs(fragCoord.x - marginX + marginWave);
+    float marginMask = 1.0 - smoothstep(0.0, 3.3, distMargin);
+    float marginBreak = fbm3(vec3(fragCoord.y * 0.005, frameSeed * 0.1, 8.0));
+    marginMask *= smoothstep(0.1, 0.5, marginBreak);
+
+    vec3 redInk = vec3(0.82, 0.22, 0.24);
+    col = mix(col, redInk, marginMask * 0.55);
+
+    return col;
+}
+
+vec4 renderPixel(vec2 fragCoord, float time, vec2 jitter, float angleJitter, float stepIndex) {
+    vec2 uv = fragCoord / u_resolution.xy * 2.0 - 1.0;
     uv += jitter * 0.02;
-    float angleJitter = (hash(vec2(jitterIndex, 3.0)) - 0.5) * 0.01;
-float ca = cos(angleJitter), sa = sin(angleJitter);
-uv = mat2(ca, -sa, sa, ca) * uv;
+    float ca = cos(angleJitter), sa = sin(angleJitter);
+    uv = mat2(ca, -sa, sa, ca) * uv;
+
     vec3 ro = vec3(0.0, 0.5, -5.0);
     vec3 forward = normalize(vec3(0.0) - ro);
     vec3 right = normalize(cross(forward, vec3(0.0, 1.0, 0.0)));
@@ -338,21 +372,18 @@ uv = mat2(ca, -sa, sa, ca) * uv;
     }
 
     vec3 paper = vec3(0.98, 0.97, 0.94);
-    float paperNoise = fbm3(vec3(gl_FragCoord.xy * 0.08, 0.0));
-    paper -= paperNoise * 0.03;
-    vec3 ink = vec3(0.12, 0.18, 0.55);
+    paper = notebookPaper(fragCoord, paper, time);
 
+    if(!hitSurface) {
+        return vec4(paper, 1.0);
+    }
+
+    vec3 ink = vec3(0.12, 0.18, 0.55);
     float contrast = 2.0;
     ink = (ink - 0.5) * contrast + 0.5;
 
-    if(!hitSurface) {
-        gl_FragColor = vec4(paper, 1.0);
-        return;
-    }
-
     vec3 hitPos = ro + rd * t;
     vec3 normal = getNormal(hitPos);
-
     vec3 localPos = hitPos * rotY(time * 0.712);
 
     float warpAmt = 0.0035;
@@ -386,28 +417,47 @@ uv = mat2(ca, -sa, sa, ca) * uv;
     float edgeDist2 = edgeMap(hitPos + warp2 * (warpAmt * 1.8), 0.004);
     float internalEdge2 = 1.0 - smoothstep(0.0, 0.012, edgeDist2);
     lineMask = max(lineMask, internalEdge2 * 0.4);
-    
+
     vec3 lightDir = normalize(vec3(2.4, 4.6, 0.3));
     float ndotl = dot(normal, lightDir);
     float shadowDepth = smoothstep(0.35, -0.35, ndotl);
 
     float angleDrift = (hash(vec2(stepIndex, 9.0)) - 0.5) * 3.0;
-
-    float hatch1 = hatchStroke(gl_FragCoord.xy, 45.0 + angleDrift, 0.8, 1.0);
+    float hatch1 = hatchStroke(fragCoord, 45.0 + angleDrift, 0.8, 1.0);
     float layer1 = hatch1 * smoothstep(0.15, 0.5, shadowDepth);
-
-    float hatch = layer1;
-    hatch *= 0.85;
-
+    float hatch = layer1 * 0.85;
     lineMask = max(lineMask, hatch * 0.5);
 
     float curvature = edgeCurvature(hitPos, normal);
     float blot = smoothstep(20.0, 80.0, curvature);
     lineMask = max(lineMask, blot * 0.6);
 
-    float grain = hash(gl_FragCoord.xy) * 0.15;
+    float grain = hash(fragCoord) * 0.25;
     lineMask = clamp(lineMask - grain * (3.0 - lineMask), 0.0, 1.0);
 
     vec3 color = mix(paper, ink, lineMask);
-    gl_FragColor = vec4(color, 1.0);
+    return vec4(color, 1.0);
+}
+
+void main() {
+    float fps = 10.0;
+    float stepIndex = 10. + floor(u_time * fps);
+    time = stepIndex / fps;
+
+    float jitterIndex = floor(stepIndex / 2.482);
+    vec2 jitter = vec2(
+        hash(vec2(jitterIndex, 1.0)),
+        hash(vec2(jitterIndex, 2.0))
+    ) - 0.5;
+    float angleJitter = (hash(vec2(jitterIndex, 3.0)) - 0.5) * 0.01;
+
+    const int AA = 2;
+    vec4 accum = vec4(0.0);
+    for(int x = 0; x < AA; x++) {
+        for(int y = 0; y < AA; y++) {
+            vec2 offset = (vec2(float(x), float(y)) + 0.5) / float(AA) - 0.5;
+            accum += renderPixel(gl_FragCoord.xy + offset, time, jitter, angleJitter, stepIndex);
+        }
+    }
+    gl_FragColor = accum / float(AA * AA);
 }
